@@ -1,3 +1,12 @@
+---
+title: Poe Rate Dashboard
+emoji: 📊
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 8000
+---
+
 # Poe Rate Dashboard
 
 一个基于 **FastAPI + Chart.js** 的 Poe 模型费率可视化面板。
@@ -36,6 +45,23 @@ python server.py
 默认访问地址：
 
 - http://127.0.0.1:8000
+
+## 部署到 Hugging Face Spaces
+
+1. 在 Hugging Face 创建 **Docker Space**（例如：`Leachim/poe-rate-dashboard`）。
+2. 确保仓库包含：
+   - `Dockerfile`
+   - 本 README 顶部的 metadata（`sdk: docker`、`app_port: 8000`）
+3. 将当前仓库推送到 Space：
+
+```bash
+git remote add hf https://huggingface.co/spaces/Leachim/poe-rate-dashboard
+git push hf main --force
+```
+
+说明：
+- `Dockerfile` 使用 `uvicorn server:app --host 0.0.0.0 --port ${PORT}` 启动。
+- 当平台注入 `PORT` 时会自动使用；未注入时默认是 `8000`。
 
 ## 配置模型
 
