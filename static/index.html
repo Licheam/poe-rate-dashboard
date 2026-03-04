@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poe 模型费率对比可视化</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 Poe 模型费率可视化对比</h1>
+            <p class="subtitle">基于 FastAPI + Chart.js 的 AI 模型价格监控面板</p>
+            <div class="actions">
+                <button id="updateBtn" class="btn-primary">🔄 立即更新数据</button>
+                <span id="loadingMsg" class="hidden">正在抓取最新数据，请稍候...</span>
+                <div id="progressWrap" class="progress-wrap hidden" aria-live="polite">
+                    <div class="progress-track">
+                        <div id="updateProgressBar" class="progress-bar" style="width: 0%;"></div>
+                    </div>
+                    <div id="progressText" class="progress-text">0%</div>
+                </div>
+            </div>
+        </header>
+
+        <section class="config-section">
+            <div class="card">
+                <div class="card-header">🛠️ 管理待爬取模型</div>
+                <div class="model-form">
+                    <input type="text" id="newModelInput" placeholder="输入模型 Handle (如: Claude-3-Opus)">
+                    <button id="addModelBtn" class="btn-secondary">添加</button>
+                </div>
+                <div class="model-hint">提示：禁用仅保存在当前浏览器，不会同步到配置文件</div>
+                <div id="modelList" class="model-tags"></div>
+            </div>
+        </section>
+
+        <section class="visuals">
+            <div class="chart-card">
+                <div class="chart-header chart-header-row">
+                    <span>模型价格分布 (USD / 1M Tokens)</span>
+                    <div class="chart-controls">
+                        <label for="chartSortKey">排序</label>
+                        <select id="chartSortKey">
+                            <option value="none">默认</option>
+                            <option value="input_usd">按输入费率</option>
+                            <option value="output_usd">按输出费率</option>
+                            <option value="handle">按模型名称</option>
+                        </select>
+                        <button id="chartSortDirBtn" class="btn-sort-dir" type="button">降序</button>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="priceChart"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <section class="table-section">
+            <div class="table-controls">
+                <input type="text" id="filterInput" placeholder="🔍 搜索模型名称...">
+                <div class="table-info">点击表头可进行数值排序</div>
+            </div>
+            <table id="rateTable">
+                <thead>
+                    <tr>
+                        <th data-sort="handle">模型名称</th>
+                        <th data-sort="input_usd">输入费率 (USD/1M)</th>
+                        <th data-sort="output_usd">输出费率 (USD/1M)</th>
+                        <th>缓存折扣</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </section>
+    </div>
+    <script src="js/app.js"></script>
+</body>
+</html>
