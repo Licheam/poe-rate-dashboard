@@ -73,3 +73,7 @@ handles = ["Claude-Opus-4.6", "GPT-5.2"]
 
 - 抓取依赖 Poe 页面与接口结构，若 Poe 变更可能导致抓取失败。
 - 本项目主要用于个人对比和可视化，不保证数据实时性与稳定性。
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
