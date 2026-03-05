@@ -90,6 +90,32 @@ h1 { margin: 0; color: var(--dark); font-weight: 800; }
     padding: 0.3rem 0.6rem;
     cursor: pointer;
 }
+.chart-model-legend-wrap { margin-bottom: 0.9rem; }
+.chart-model-legend-title {
+    font-size: 0.85rem;
+    color: #64748b;
+    margin-bottom: 0.45rem;
+}
+.chart-model-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+.chart-model-chip {
+    border: 1px solid #d1d5db;
+    border-radius: 999px;
+    background: #f8fafc;
+    color: #334155;
+    font-size: 0.78rem;
+    padding: 0.18rem 0.55rem;
+    cursor: pointer;
+}
+.chart-model-chip.is-hidden {
+    color: #94a3b8;
+    border-style: dashed;
+    background: #fff;
+    text-decoration: line-through;
+}
 .chart-container { height: 400px; }
 
 .table-section { background: white; padding: 1.5rem; border-radius: 1rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }

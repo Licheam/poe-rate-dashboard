@@ -3,12 +3,15 @@ let modelConfig = [];
 let myChart = null;
 let progressTimer = null;
 const DISABLED_MODELS_KEY = 'poe_disabled_models';
+const CHART_HIDDEN_MODELS_KEY = 'poe_chart_hidden_models';
 let disabledModels = new Set();
+let chartHiddenModels = new Set();
 let currentSort = { key: null, asc: true };
 let chartSort = { key: 'none', asc: false };
 
 async function init() {
     loadDisabledModels();
+    loadChartHiddenModels();
     await loadConfig();
     await loadData();
     setupEventListeners();
@@ -159,7 +162,10 @@ async function pollProgress() {
 
 function refreshUI() {
     const activeData = getActiveData();
-    renderChart(applyChartView(activeData));
+    syncChartHiddenModelsWithData(activeData);
+    const chartData = applyChartView(activeData);
+    renderChart(chartData);
+    renderChartModelLegend(chartData);
     renderTable(applyView(activeData));
 }
 
@@ -171,8 +177,8 @@ function extractNum(s) {
 function renderChart(data) {
     const ctx = document.getElementById('priceChart').getContext('2d');
     const labels = data.map(m => m.handle);
-    const inputPrices = data.map(m => extractNum(m.input.usd));
-    const outputPrices = data.map(m => extractNum(m.output.usd));
+    const inputPrices = data.map(m => chartHiddenModels.has(m.handle) ? null : extractNum(m.input.usd));
+    const outputPrices = data.map(m => chartHiddenModels.has(m.handle) ? null : extractNum(m.output.usd));
     if (myChart) myChart.destroy();
     myChart = new Chart(ctx, {
         type: 'bar',
@@ -185,6 +191,16 @@ function renderChart(data) {
         },
         options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } }, plugins: { legend: { position: 'bottom' } } }
     });
+}
+
+function renderChartModelLegend(data) {
+    const wrap = document.getElementById('chartModelLegend');
+    if (!wrap) return;
+    wrap.innerHTML = data.map(m => {
+        const hidden = chartHiddenModels.has(m.handle);
+        const cls = hidden ? 'chart-model-chip is-hidden' : 'chart-model-chip';
+        return `<button type="button" class="${cls}" data-handle="${encodeURIComponent(m.handle)}">${escapeHtml(m.handle)}</button>`;
+    }).join('');
 }
 
 function renderTable(data) {
@@ -231,14 +247,19 @@ function setupEventListeners() {
     });
     document.getElementById('chartSortKey').addEventListener('change', (e) => {
         chartSort.key = e.target.value || 'none';
-        const activeData = getActiveData();
-        renderChart(applyChartView(activeData));
+        refreshUI();
     });
     document.getElementById('chartSortDirBtn').addEventListener('click', () => {
         chartSort.asc = !chartSort.asc;
         updateChartSortDirText();
-        const activeData = getActiveData();
-        renderChart(applyChartView(activeData));
+        refreshUI();
+    });
+    document.getElementById('chartModelLegend').addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-handle]');
+        if (!btn) return;
+        const handle = decodeURIComponent(btn.dataset.handle || '');
+        if (!handle) return;
+        toggleChartModelHidden(handle);
     });
     updateChartSortDirText();
 }
@@ -257,6 +278,20 @@ function saveDisabledModels() {
     localStorage.setItem(DISABLED_MODELS_KEY, JSON.stringify(Array.from(disabledModels)));
 }
 
+function loadChartHiddenModels() {
+    try {
+        const raw = localStorage.getItem(CHART_HIDDEN_MODELS_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        chartHiddenModels = new Set(Array.isArray(parsed) ? parsed : []);
+    } catch (err) {
+        chartHiddenModels = new Set();
+    }
+}
+
+function saveChartHiddenModels() {
+    localStorage.setItem(CHART_HIDDEN_MODELS_KEY, JSON.stringify(Array.from(chartHiddenModels)));
+}
+
 function syncDisabledModelsWithConfig() {
     const cfgSet = new Set(modelConfig);
     const next = new Set();
@@ -265,6 +300,16 @@ function syncDisabledModelsWithConfig() {
     });
     disabledModels = next;
     saveDisabledModels();
+}
+
+function syncChartHiddenModelsWithData(data) {
+    const dataSet = new Set(data.map(m => m.handle));
+    const next = new Set();
+    chartHiddenModels.forEach(handle => {
+        if (dataSet.has(handle)) next.add(handle);
+    });
+    chartHiddenModels = next;
+    saveChartHiddenModels();
 }
 
 function isModelEnabled(handle) {
@@ -277,6 +322,16 @@ function toggleModelDisabled(handle) {
     saveDisabledModels();
     renderModelConfig();
     refreshUI();
+}
+
+function toggleChartModelHidden(handle) {
+    if (chartHiddenModels.has(handle)) chartHiddenModels.delete(handle);
+    else chartHiddenModels.add(handle);
+    saveChartHiddenModels();
+    const activeData = getActiveData();
+    const chartData = applyChartView(activeData);
+    renderChart(chartData);
+    renderChartModelLegend(chartData);
 }
 
 function getActiveData() {
