@@ -191,7 +191,7 @@ function renderTable(data) {
     const tbody = document.getElementById('tableBody');
     tbody.innerHTML = data.map(m => `
         <tr>
-            <td><strong>${m.handle}</strong></td>
+            <td><a class="table-model-link" href="https://poe.com/${encodeURIComponent(m.handle)}" target="_blank" rel="noopener noreferrer">${escapeHtml(m.handle)}</a></td>
             <td><div class="price-usd">${m.input.usd}</div><div class="price-pts">${m.input.points}</div></td>
             <td><div class="price-usd">${m.output.usd}</div><div class="price-pts">${m.output.points}</div></td>
             <td><span class="cache-txt">${m.cache_discount}</span></td>
