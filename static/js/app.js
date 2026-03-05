@@ -34,7 +34,7 @@ function renderModelConfig() {
         const tagClass = enabled ? '' : 'disabled';
         return `
         <span class="model-tag ${tagClass}">
-            <span class="model-name">${escapeHtml(m)}</span>
+            <a class="model-name" href="https://poe.com/${encoded}" target="_blank" rel="noopener noreferrer">${escapeHtml(m)}</a>
             <button class="toggle-btn ${toggleClass}" data-action="toggle" data-handle="${encoded}">${stateText}</button>
             <button data-action="delete" data-handle="${encoded}">×</button>
         </span>
