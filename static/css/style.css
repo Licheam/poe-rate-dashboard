@@ -141,6 +141,8 @@ td { padding: 1rem; border-bottom: 1px solid var(--border); }
 .price-usd { font-weight: 600; color: var(--success); }
 .price-pts { font-size: 0.85rem; color: #94a3b8; margin-top: 0.2rem; }
 .cache-txt { font-size: 0.85rem; color: var(--primary); }
+.cache-txt a { color: inherit; text-decoration: none; }
+.cache-txt a:hover { text-decoration: underline; }
 .hidden { display: none; }
 tr:hover td { background: #f8fafc; }
 

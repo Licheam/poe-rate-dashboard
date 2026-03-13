@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+import html
 import json
 import toml
 import re
@@ -77,6 +78,32 @@ def extract_redirect_handle(location):
 def extract_bot_id(page_text):
     match = re.search(r'"botId":(\d+)', page_text)
     return int(match.group(1)) if match else None
+
+def render_cache_discount_html(value):
+    if not value:
+        return "N/A"
+
+    parts = []
+    last_end = 0
+
+    for match in re.finditer(r'\[([^\]]+)\]\((https?://[^\s)]+)\)', value):
+        start, end = match.span()
+        if start > last_end:
+            parts.append(html.escape(value[last_end:start]))
+
+        text, url = match.groups()
+        safe_text = html.escape(text)
+        safe_url = html.escape(url, quote=True)
+        parts.append(f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_text}</a>')
+        last_end = end
+
+    if last_end == 0:
+        return html.escape(value)
+
+    if last_end < len(value):
+        parts.append(html.escape(value[last_end:]))
+
+    return "".join(parts)
 
 async def fetch_single_rate(handle):
     async def fetch_page(client, current_handle):
@@ -153,7 +180,7 @@ async def fetch_single_rate(handle):
 
         cr = re.search(r'\|\s*(?:缓存折扣|Cache discount)\s*\|\s*(.*?)\s*\|', markdown, flags=re.IGNORECASE)
         if cr:
-            rates["cache_discount"] = cr.group(1).strip()
+            rates["cache_discount"] = render_cache_discount_html(cr.group(1).strip())
 
         return {
             "handle": current_handle,
