@@ -21,6 +21,11 @@ app.add_middleware(
 
 CONFIG_FILE = "models_config.toml"
 DATA_FILE = "static/data.json"
+CANONICAL_PREFIXES = {
+    "gpt": "GPT",
+    "claude": "Claude",
+    "gemini": "Gemini",
+}
 
 update_status = {
     "running": False,
@@ -42,26 +47,83 @@ HEADERS = {
     'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36'
 }
 
+def normalize_handle_case(handle):
+    if not handle:
+        return handle
+
+    parts = re.split(r'([\-_.])', handle)
+    if not parts:
+        return handle
+
+    prefix = parts[0].lower()
+    canonical = CANONICAL_PREFIXES.get(prefix)
+    if not canonical:
+        return handle
+
+    parts[0] = canonical
+    return "".join(parts)
+
+def extract_redirect_handle(location):
+    if not location:
+        return None
+
+    match = re.search(r'https?://poe\.com/([^/?#]+)|^/([^/?#]+)', location, flags=re.IGNORECASE)
+    if not match:
+        return None
+
+    handle = match.group(1) or match.group(2)
+    return handle or None
+
+def extract_bot_id(page_text):
+    match = re.search(r'"botId":(\d+)', page_text)
+    return int(match.group(1)) if match else None
+
 async def fetch_single_rate(handle):
-    url = f"https://poe.com/{handle}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(url, headers={'user-agent': HEADERS['user-agent']})
-        match = re.search(r'"botId":(\d+)', resp.text)
-        bid = int(match.group(1)) if match else None
-    
-    if not bid: return None
-    
-    payload = {
-        "queryName": "RateCardModalQuery",
-        "variables": {"botId": bid},
-        "extensions": {"hash": "63afb70b30540bafd08f593b26c61f8bdd5b6818590742e5170f417709792788"}
-    }
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async def fetch_page(client, current_handle):
+        url = f"https://poe.com/{current_handle}"
+        resp = await client.get(
+            url,
+            headers={'user-agent': HEADERS['user-agent']},
+            follow_redirects=False,
+        )
+
+        redirect_handle = extract_redirect_handle(resp.headers.get("location"))
+        if redirect_handle and redirect_handle != current_handle:
+            return {
+                "status": "redirect",
+                "handle": redirect_handle,
+                "bot_id": None,
+            }
+
+        if resp.status_code == 404:
+            return {
+                "status": "not_found",
+                "handle": current_handle,
+                "bot_id": None,
+            }
+
+        bot_id = extract_bot_id(resp.text)
+        return {
+            "status": "ok" if bot_id else "missing_bot_id",
+            "handle": current_handle,
+            "bot_id": bot_id,
+        }
+
+    async def fetch_rates(client, current_handle, bot_id):
+        payload = {
+            "queryName": "RateCardModalQuery",
+            "variables": {"botId": bot_id},
+            "extensions": {"hash": "63afb70b30540bafd08f593b26c61f8bdd5b6818590742e5170f417709792788"}
+        }
         resp = await client.post('https://poe.com/api/gql_POST', headers=HEADERS, json=payload)
         data = resp.json()
+
+        if data.get("errors"):
+            return None
+
         pricing = data.get("data", {}).get("botById", {}).get("botPricing", {})
         markdown = pricing.get("rateMenuMarkdown", "")
-        
+
         rates = {"input_usd": "N/A", "input_points": "N/A", "output_usd": "N/A", "output_points": "N/A", "cache_discount": "N/A"}
 
         # Poe may return Chinese or English labels based on request locale.
@@ -93,7 +155,47 @@ async def fetch_single_rate(handle):
         if cr:
             rates["cache_discount"] = cr.group(1).strip()
 
-        return {"handle": handle, "input": {"usd": rates["input_usd"], "points": rates["input_points"]}, "output": {"usd": rates["output_usd"], "points": rates["output_points"]}, "cache_discount": rates["cache_discount"]}
+        return {
+            "handle": current_handle,
+            "input": {"usd": rates["input_usd"], "points": rates["input_points"]},
+            "output": {"usd": rates["output_usd"], "points": rates["output_points"]},
+            "cache_discount": rates["cache_discount"]
+        }
+
+    attempted = []
+    pending = [handle]
+    normalized_handle = normalize_handle_case(handle)
+    if normalized_handle not in pending:
+        pending.append(normalized_handle)
+
+    async with httpx.AsyncClient(timeout=10.0) as page_client, httpx.AsyncClient(timeout=15.0) as gql_client:
+        while pending:
+            current_handle = pending.pop(0)
+            if current_handle in attempted:
+                continue
+            attempted.append(current_handle)
+
+            page_result = await fetch_page(page_client, current_handle)
+            resolved_handle = page_result["handle"]
+
+            if page_result["status"] in {"redirect", "not_found", "missing_bot_id"}:
+                candidate = normalize_handle_case(resolved_handle)
+                if candidate not in attempted and candidate not in pending:
+                    pending.append(candidate)
+
+                if page_result["status"] == "redirect" and resolved_handle not in attempted and resolved_handle not in pending:
+                    pending.insert(0, resolved_handle)
+                continue
+
+            result = await fetch_rates(gql_client, resolved_handle, page_result["bot_id"])
+            if result:
+                return result
+
+            candidate = normalize_handle_case(resolved_handle)
+            if candidate not in attempted and candidate not in pending:
+                pending.append(candidate)
+
+    return None
 
 # API Routes
 @app.get("/api/config")
@@ -108,8 +210,11 @@ class ModelHandle(BaseModel):
 def add_model(item: ModelHandle):
     with open(CONFIG_FILE, "r") as f:
         cfg = toml.load(f)
-    if item.handle not in cfg["handles"]:
-        cfg["handles"].append(item.handle)
+
+    normalized_handle = normalize_handle_case(item.handle)
+    existing_handles = {handle.lower() for handle in cfg["handles"]}
+    if normalized_handle.lower() not in existing_handles:
+        cfg["handles"].append(normalized_handle)
         with open(CONFIG_FILE, "w") as f:
             toml.dump(cfg, f)
     return cfg["handles"]
