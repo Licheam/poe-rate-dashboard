@@ -64,7 +64,13 @@
         <section class="table-section">
             <div class="table-controls">
                 <input type="text" id="filterInput" placeholder="🔍 搜索模型名称...">
-                <div class="table-info">点击表头可进行数值排序</div>
+                <div class="table-side-controls">
+                    <label class="group-sort-toggle">
+                        <input type="checkbox" id="groupByPrefixToggle">
+                        <span>按模型前缀分组排序</span>
+                    </label>
+                    <div class="table-info">点击表头可进行数值排序</div>
+                </div>
             </div>
             <table id="rateTable">
                 <thead>

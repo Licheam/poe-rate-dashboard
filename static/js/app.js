@@ -8,6 +8,7 @@ let disabledModels = new Set();
 let chartHiddenModels = new Set();
 let currentSort = { key: null, asc: true };
 let chartSort = { key: 'none', asc: false };
+let groupByPrefixEnabled = false;
 
 async function init() {
     loadDisabledModels();
@@ -236,6 +237,11 @@ function setupEventListeners() {
         const activeData = getActiveData();
         renderTable(applyView(activeData));
     });
+    document.getElementById('groupByPrefixToggle').addEventListener('change', (e) => {
+        groupByPrefixEnabled = Boolean(e.target.checked);
+        const activeData = getActiveData();
+        renderTable(applyView(activeData));
+    });
     document.querySelectorAll('th[data-sort]').forEach(th => {
         th.addEventListener('click', () => {
             const key = th.dataset.sort;
@@ -341,18 +347,59 @@ function getActiveData() {
 function applyView(data) {
     const term = document.getElementById('filterInput').value.trim().toLowerCase();
     let out = term ? data.filter(m => m.handle.toLowerCase().includes(term)) : [...data];
+    if (groupByPrefixEnabled) {
+        out.sort(compareGroupedModels);
+        return out;
+    }
     const key = currentSort.key;
     if (!key) return out;
-    out.sort((a, b) => {
-        let valA, valB;
-        if (key === 'handle') { valA = a.handle; valB = b.handle; }
-        else if (key === 'input_usd') { valA = extractNum(a.input.usd); valB = extractNum(b.input.usd); }
-        else if (key === 'output_usd') { valA = extractNum(a.output.usd); valB = extractNum(b.output.usd); }
-        else return 0;
-        const compare = valA > valB ? 1 : (valA < valB ? -1 : 0);
-        return currentSort.asc ? compare : -compare;
-    });
+    out.sort((a, b) => compareBySortKey(a, b, key, currentSort.asc));
     return out;
+}
+
+function compareGroupedModels(a, b) {
+    const prefixCompare = compareValues(getModelPrefix(a.handle), getModelPrefix(b.handle));
+    if (prefixCompare !== 0) return prefixCompare;
+
+    const priceKey = currentSort.key === 'output_usd' ? 'output_usd' : 'input_usd';
+    const priceAsc = currentSort.key ? currentSort.asc : true;
+    const priceCompare = compareBySortKey(a, b, priceKey, priceAsc);
+    if (priceCompare !== 0) return priceCompare;
+
+    return compareValues(a.handle.toLowerCase(), b.handle.toLowerCase());
+}
+
+function compareBySortKey(a, b, key, asc) {
+    let valA;
+    let valB;
+    if (key === 'handle') {
+        valA = a.handle.toLowerCase();
+        valB = b.handle.toLowerCase();
+    } else if (key === 'input_usd') {
+        valA = extractNum(a.input.usd);
+        valB = extractNum(b.input.usd);
+    } else if (key === 'output_usd') {
+        valA = extractNum(a.output.usd);
+        valB = extractNum(b.output.usd);
+    } else {
+        return 0;
+    }
+    const compare = compareValues(valA, valB);
+    return asc ? compare : -compare;
+}
+
+function compareValues(a, b) {
+    if (a > b) return 1;
+    if (a < b) return -1;
+    return 0;
+}
+
+function getModelPrefix(handle) {
+    const normalized = handle.trim();
+    const match = normalized.match(/^[A-Za-z][A-Za-z0-9]*/);
+    if (match) return match[0].toUpperCase();
+    const token = normalized.split(/[-_\s]+/).find(Boolean);
+    return (token || normalized).toUpperCase();
 }
 
 function applyChartView(data) {
