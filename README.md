@@ -23,7 +23,7 @@ app_port: 8000
 
 ## 技术栈
 
-- 后端：FastAPI、Uvicorn、httpx、toml
+- 后端：FastAPI、Uvicorn、httpx、toml、BeautifulSoup
 - 前端：原生 HTML/CSS/JS + Chart.js
 
 ## 快速开始
@@ -33,7 +33,7 @@ app_port: 8000
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install fastapi uvicorn httpx toml
+pip install fastapi uvicorn httpx toml beautifulsoup4
 ```
 
 ### 2. 启动服务
@@ -78,6 +78,8 @@ handles = ["Claude-Opus-4.6", "GPT-5.2"]
 - `GET /api/config`：获取模型配置
 - `POST /api/config`：新增模型（body: `{ "handle": "xxx" }`）
 - `DELETE /api/config/{handle}`：删除模型
+- `GET /api/poe/leaderboard`：获取 Poe 排行榜（query: `count` 默认 `30`，最大 `100`；`type` 默认 `"models"`，可选 `"apps"`）
+- `POST /api/config/import-leaderboard`：将排行榜条目导入模型配置（body: `{ "count": 30, "type": "models" }`，`count` 最大 `100`）
 - `GET /api/update`：更新全部或指定模型数据
 - `GET /api/update/status`：获取更新进度
 - `GET /api/data`：读取当前已保存数据

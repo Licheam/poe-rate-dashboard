@@ -2,14 +2,24 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from bs4 import BeautifulSoup
 import httpx
 import html
 import json
-import toml
 import re
 import os
 from datetime import datetime
 from typing import List, Optional
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    tomllib = None
+
+try:
+    import toml
+except ModuleNotFoundError:
+    toml = None
 
 app = FastAPI()
 
@@ -22,10 +32,15 @@ app.add_middleware(
 
 CONFIG_FILE = "models_config.toml"
 DATA_FILE = "static/data.json"
+POE_LEADERBOARD_URL = "https://poe.com/leaderboard"
 CANONICAL_PREFIXES = {
     "gpt": "GPT",
     "claude": "Claude",
     "gemini": "Gemini",
+}
+LEADERBOARD_TYPE_TITLES = {
+    "models": "Top Models",
+    "apps": "Top Apps",
 }
 
 update_status = {
@@ -63,6 +78,43 @@ def normalize_handle_case(handle):
 
     parts[0] = canonical
     return "".join(parts)
+
+def normalize_whitespace(value):
+    return re.sub(r"\s+", " ", value or "").strip()
+
+def validate_leaderboard_type(value):
+    leaderboard_type = (value or "models").strip().lower()
+    if leaderboard_type not in LEADERBOARD_TYPE_TITLES:
+        raise HTTPException(status_code=422, detail='type must be "models" or "apps"')
+    return leaderboard_type
+
+def load_config():
+    with open(CONFIG_FILE, "r") as f:
+        if tomllib is not None:
+            return tomllib.loads(f.read())
+        if toml is not None:
+            return toml.loads(f.read())
+    raise RuntimeError("No TOML reader available")
+
+def save_config(cfg):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        if toml is not None:
+            toml.dump(cfg, f)
+            return
+        handles = cfg.get("handles", [])
+        serialized_handles = ", ".join(json.dumps(handle, ensure_ascii=False) for handle in handles)
+        f.write(f"handles = [{serialized_handles}]\n")
+
+def add_model_handle(cfg, handle):
+    normalized_handle = normalize_handle_case((handle or "").strip())
+    if not normalized_handle:
+        raise HTTPException(status_code=422, detail="handle is required")
+
+    existing_handles = {item.lower() for item in cfg["handles"]}
+    if normalized_handle.lower() not in existing_handles:
+        cfg["handles"].append(normalized_handle)
+        return True
+    return False
 
 def extract_redirect_handle(location):
     if not location:
@@ -104,6 +156,141 @@ def render_cache_discount_html(value):
         parts.append(html.escape(value[last_end:]))
 
     return "".join(parts)
+
+async def fetch_poe_leaderboard_html():
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(
+                POE_LEADERBOARD_URL,
+                headers={"user-agent": HEADERS["user-agent"]},
+            )
+            resp.raise_for_status()
+            if not resp.text:
+                raise HTTPException(status_code=502, detail="Poe leaderboard returned empty HTML")
+            return resp.text
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Poe leaderboard request failed with status {exc.response.status_code}",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Failed to fetch Poe leaderboard") from exc
+
+def _find_leaderboard_heading(soup, title):
+    title_text = normalize_whitespace(title).lower()
+    for tag in soup.find_all(["h1", "h2", "h3", "h4", "div", "span", "p", "button"]):
+        tag_text = normalize_whitespace(tag.get_text(" ", strip=True)).lower()
+        if tag_text == title_text or title_text in tag_text:
+            return tag
+    return None
+
+def _looks_like_leaderboard_container(tag):
+    if not getattr(tag, "find_all", None):
+        return False
+
+    text = normalize_whitespace(tag.get_text(" ", strip=True))
+    if not re.search(r"\b\d+\b", text):
+        return False
+    if not re.search(r"\d+(?:\.\d+)?%", text):
+        return False
+
+    link_count = 0
+    for link in tag.find_all("a", href=True):
+        if extract_redirect_handle(link["href"]):
+            link_count += 1
+            if link_count >= 3:
+                return True
+    return False
+
+def extract_leaderboard_section(html_text, leaderboard_type):
+    soup = BeautifulSoup(html_text, "html.parser")
+    title = LEADERBOARD_TYPE_TITLES[leaderboard_type]
+    heading = _find_leaderboard_heading(soup, title)
+    if heading is None:
+        raise HTTPException(status_code=502, detail=f'Could not find "{title}" section in Poe leaderboard HTML')
+
+    for parent in heading.parents:
+        if _looks_like_leaderboard_container(parent):
+            return parent
+
+    sibling_container = heading.parent
+    if sibling_container and _looks_like_leaderboard_container(sibling_container):
+        return sibling_container
+
+    raise HTTPException(status_code=502, detail=f'Could not isolate "{title}" section in Poe leaderboard HTML')
+
+def _extract_rank(text):
+    patterns = [
+        r"^\s*#?(\d{1,3})(?:[.)\s]|$)",
+        r"\brank\s*#?\s*(\d{1,3})\b",
+        r"\b排名\s*#?\s*(\d{1,3})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+def _extract_market_share(text):
+    match = re.search(r"(\d+(?:\.\d+)?)%", text)
+    return f"{match.group(1)}%" if match else None
+
+def _extract_handle_from_link(link):
+    text_handle = normalize_whitespace(link.get_text(" ", strip=True))
+    if text_handle:
+        return normalize_handle_case(text_handle)
+
+    href_handle = extract_redirect_handle(link.get("href"))
+    if href_handle:
+        return normalize_handle_case(href_handle)
+
+    return None
+
+def parse_leaderboard_items(section, count):
+    items = []
+    seen_handles = set()
+
+    for link in section.find_all("a", href=True):
+        handle = _extract_handle_from_link(link)
+        if not handle:
+            continue
+
+        lowered_handle = handle.lower()
+        if lowered_handle in {"leaderboard", "download", "login", "settings"}:
+            continue
+        if lowered_handle in seen_handles:
+            continue
+
+        row = None
+        for parent in link.parents:
+            if parent == section:
+                break
+            parent_text = normalize_whitespace(parent.get_text(" ", strip=True))
+            if _extract_rank(parent_text) and _extract_market_share(parent_text):
+                row = parent
+                break
+
+        if row is None:
+            continue
+
+        row_text = normalize_whitespace(row.get_text(" ", strip=True))
+        rank = _extract_rank(row_text)
+        market_share = _extract_market_share(row_text)
+        if rank is None or market_share is None:
+            continue
+
+        items.append({
+            "rank": rank,
+            "handle": handle,
+            "market_share": market_share,
+        })
+        seen_handles.add(lowered_handle)
+
+        if len(items) >= count:
+            break
+
+    items.sort(key=lambda item: item["rank"])
+    return items[:count]
 
 async def fetch_single_rate(handle):
     async def fetch_page(client, current_handle):
@@ -227,39 +414,68 @@ async def fetch_single_rate(handle):
 # API Routes
 @app.get("/api/config")
 def get_config():
-    with open(CONFIG_FILE, "r") as f:
-        return toml.load(f)["handles"]
+    return load_config()["handles"]
 
 class ModelHandle(BaseModel):
     handle: str
 
+class LeaderboardImportRequest(BaseModel):
+    count: int = 30
+    type: str = "models"
+
 @app.post("/api/config")
 def add_model(item: ModelHandle):
-    with open(CONFIG_FILE, "r") as f:
-        cfg = toml.load(f)
-
-    normalized_handle = normalize_handle_case(item.handle)
-    existing_handles = {handle.lower() for handle in cfg["handles"]}
-    if normalized_handle.lower() not in existing_handles:
-        cfg["handles"].append(normalized_handle)
-        with open(CONFIG_FILE, "w") as f:
-            toml.dump(cfg, f)
+    cfg = load_config()
+    if add_model_handle(cfg, item.handle):
+        save_config(cfg)
     return cfg["handles"]
 
 @app.delete("/api/config/{handle}")
 def delete_model(handle: str):
-    with open(CONFIG_FILE, "r") as f:
-        cfg = toml.load(f)
+    cfg = load_config()
     if handle in cfg["handles"]:
         cfg["handles"].remove(handle)
-        with open(CONFIG_FILE, "w") as f:
-            toml.dump(cfg, f)
+        save_config(cfg)
+    return cfg["handles"]
+
+@app.get("/api/poe/leaderboard")
+async def get_poe_leaderboard(
+    count: int = Query(default=30, ge=1, le=100),
+    type: str = Query(default="models"),
+):
+    leaderboard_type = validate_leaderboard_type(type)
+    html_text = await fetch_poe_leaderboard_html()
+    section = extract_leaderboard_section(html_text, leaderboard_type)
+    items = parse_leaderboard_items(section, count)
+    if not items:
+        raise HTTPException(status_code=502, detail="Could not parse Poe leaderboard items")
+    return items
+
+@app.post("/api/config/import-leaderboard")
+async def import_leaderboard_models(item: LeaderboardImportRequest):
+    if item.count < 1 or item.count > 100:
+        raise HTTPException(status_code=422, detail="count must be between 1 and 100")
+
+    leaderboard_type = validate_leaderboard_type(item.type)
+    html_text = await fetch_poe_leaderboard_html()
+    section = extract_leaderboard_section(html_text, leaderboard_type)
+    leaderboard_items = parse_leaderboard_items(section, item.count)
+    if not leaderboard_items:
+        raise HTTPException(status_code=502, detail="Could not parse Poe leaderboard items")
+
+    cfg = load_config()
+    changed = False
+    for leaderboard_item in leaderboard_items:
+        changed = add_model_handle(cfg, leaderboard_item["handle"]) or changed
+
+    if changed:
+        save_config(cfg)
+
     return cfg["handles"]
 
 @app.get("/api/update")
 async def update_all(handles: Optional[List[str]] = Query(default=None)):
-    with open(CONFIG_FILE, "r") as f:
-        cfg_handles = toml.load(f)["handles"]
+    cfg_handles = load_config()["handles"]
 
     if handles is None:
         targets = cfg_handles

@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install runtime dependencies
-RUN pip install --no-cache-dir fastapi uvicorn httpx toml
+RUN pip install --no-cache-dir fastapi uvicorn httpx toml beautifulsoup4
 
 # Copy project files
 COPY . .
