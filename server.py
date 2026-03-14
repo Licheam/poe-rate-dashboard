@@ -261,23 +261,24 @@ async def fetch_poe_leaderboard_via_graphql(count: int, type: str = "models"):
         )
         raise HTTPException(status_code=502, detail=f"Poe leaderboard GraphQL response missing {ranking_key}.topRankings")
 
-    items = []
-    seen_handles = set()
+    parsed_items = []
+    best_items_by_handle = {}
     skipped_rankings = []
     for index, ranking in enumerate(rankings):
         if not isinstance(ranking, dict):
             skipped_rankings.append({"index": index, "reason": "ranking is not a dict", "value": ranking})
             continue
 
-        rank = ranking.get("rank")
+        rank_metric = ranking.get("rankMetric")
         ranked = ranking.get("ranked")
         handle, handle_source = _extract_leaderboard_handle(ranked)
-        if not isinstance(rank, int) or not handle:
+        has_valid_rank_metric = isinstance(rank_metric, (int, float)) and not isinstance(rank_metric, bool)
+        if not has_valid_rank_metric or not handle:
             skipped_rankings.append(
                 {
                     "index": index,
-                    "reason": "missing required rank/handle",
-                    "rank": rank,
+                    "reason": "missing required rankMetric/handle",
+                    "rankMetric": rank_metric,
                     "handle_source": handle_source,
                     "ranking_keys": sorted(ranking.keys()),
                     "ranked_keys": sorted(ranked.keys()) if isinstance(ranked, dict) else None,
@@ -287,33 +288,42 @@ async def fetch_poe_leaderboard_via_graphql(count: int, type: str = "models"):
             continue
 
         lowered_handle = handle.lower()
-        if lowered_handle in seen_handles:
+        candidate = {
+            "handle": handle,
+            "rankMetric": float(rank_metric),
+            "_index": index,
+        }
+        existing = best_items_by_handle.get(lowered_handle)
+        if existing is None or candidate["rankMetric"] > existing["rankMetric"]:
+            best_items_by_handle[lowered_handle] = candidate
             logger.info(
-                "Skipping duplicate leaderboard item: index=%s handle=%s rank=%s source=%s",
+                "Parsed leaderboard item: index=%s handle=%s rankMetric=%s source=%s",
                 index,
                 handle,
-                rank,
+                rank_metric,
                 handle_source,
             )
-            continue
+        else:
+            logger.info(
+                "Skipping duplicate leaderboard item: index=%s handle=%s rankMetric=%s source=%s",
+                index,
+                handle,
+                rank_metric,
+                handle_source,
+            )
 
-        items.append({
-            "handle": handle,
+    parsed_items = sorted(
+        best_items_by_handle.values(),
+        key=lambda item: (-item["rankMetric"], item["_index"]),
+    )
+    items = [
+        {
+            "handle": item["handle"],
             "rank": rank,
-        })
-        logger.info(
-            "Parsed leaderboard item: index=%s handle=%s rank=%s source=%s",
-            index,
-            handle,
-            rank,
-            handle_source,
-        )
-        seen_handles.add(lowered_handle)
-
-        if len(items) >= count:
-            break
-
-    items.sort(key=lambda item: item["rank"])
+            "rankMetric": item["rankMetric"],
+        }
+        for rank, item in enumerate(parsed_items[:count], start=1)
+    ]
     logger.info(
         "Leaderboard parsing completed: requested=%s parsed=%s skipped=%s items=%s",
         count,

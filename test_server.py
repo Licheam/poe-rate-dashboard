@@ -12,7 +12,6 @@ SAMPLE_GRAPHQL_RESPONSE = {
         "topModelLatest": {
             "topRankings": [
                 {
-                    "rank": 1,
                     "rankMetric": 0.174033,
                     "ranked": {
                         "displayName": "Nano-Banana-2",
@@ -20,7 +19,6 @@ SAMPLE_GRAPHQL_RESPONSE = {
                     },
                 },
                 {
-                    "rank": 2,
                     "rankMetric": 0.12,
                     "ranked": {
                         "displayName": "claude-sonnet-4.6",
@@ -28,7 +26,6 @@ SAMPLE_GRAPHQL_RESPONSE = {
                     },
                 },
                 {
-                    "rank": 2,
                     "rankMetric": 0.11,
                     "ranked": {
                         "displayName": "Claude-sonnet-4.6",
@@ -40,19 +37,17 @@ SAMPLE_GRAPHQL_RESPONSE = {
         "topAppLatest": {
             "topRankings": [
                 {
-                    "rank": 1,
                     "rankMetric": 0.22,
                     "ranked": {
                         "displayName": "App-One",
-                        "__typename": "Bot",
+                        "__typename": "ExternalApiApp",
                     },
                 },
                 {
-                    "rank": 2,
                     "rankMetric": 0.18,
                     "ranked": {
                         "displayName": "App-Two",
-                        "__typename": "Bot",
+                        "__typename": "ExternalApiApp",
                     },
                 },
             ]
@@ -109,8 +104,8 @@ class FetchPoeLeaderboardGraphQLTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             items,
             [
-                {"handle": "Nano-Banana-2", "rank": 1},
-                {"handle": "Claude-sonnet-4.6", "rank": 2},
+                {"handle": "Nano-Banana-2", "rank": 1, "rankMetric": 0.174033},
+                {"handle": "Claude-sonnet-4.6", "rank": 2, "rankMetric": 0.12},
             ],
         )
         self.assertEqual(fake_client.calls[0]["url"], server.POE_GRAPHQL_URL)
@@ -133,7 +128,7 @@ class FetchPoeLeaderboardGraphQLTests(unittest.IsolatedAsyncioTestCase):
         with patch("server.httpx.AsyncClient", return_value=fake_client):
             items = await server.fetch_poe_leaderboard_via_graphql(1, "apps")
 
-        self.assertEqual(items, [{"handle": "App-One", "rank": 1}])
+        self.assertEqual(items, [{"handle": "App-One", "rank": 1, "rankMetric": 0.22}])
 
     async def test_fetch_models_falls_back_to_handle_field(self):
         fake_client = FakeAsyncClient(
@@ -143,7 +138,7 @@ class FetchPoeLeaderboardGraphQLTests(unittest.IsolatedAsyncioTestCase):
                         "topModelLatest": {
                             "topRankings": [
                                 {
-                                    "rank": 1,
+                                    "rankMetric": 0.31,
                                     "ranked": {
                                         "handle": "gpt-oss-120b",
                                         "__typename": "Bot",
@@ -159,7 +154,7 @@ class FetchPoeLeaderboardGraphQLTests(unittest.IsolatedAsyncioTestCase):
         with patch("server.httpx.AsyncClient", return_value=fake_client):
             items = await server.fetch_poe_leaderboard_via_graphql(5, "models")
 
-        self.assertEqual(items, [{"handle": "GPT-oss-120b", "rank": 1}])
+        self.assertEqual(items, [{"handle": "GPT-oss-120b", "rank": 1, "rankMetric": 0.31}])
 
     async def test_fetch_raises_on_missing_rankings(self):
         fake_client = FakeAsyncClient(FakeResponse({"data": {"topModelLatest": {}}}))
@@ -179,7 +174,6 @@ class FetchPoeLeaderboardGraphQLTests(unittest.IsolatedAsyncioTestCase):
                         "topModelLatest": {
                             "topRankings": [
                                 {
-                                    "rank": 1,
                                     "ranked": {
                                         "__typename": "Bot",
                                     },
