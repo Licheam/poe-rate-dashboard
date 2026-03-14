@@ -9,10 +9,12 @@ let chartHiddenModels = new Set();
 let currentSort = { key: null, asc: true };
 let chartSort = { key: 'none', asc: false };
 let groupByPrefixEnabled = false;
+const IMPORT_LEADERBOARD_TOAST_KEY = 'poe_import_leaderboard_toast';
 
 async function init() {
     loadDisabledModels();
     loadChartHiddenModels();
+    showPendingToast();
     await loadConfig();
     await loadData();
     setupEventListeners();
@@ -68,6 +70,34 @@ async function deleteModel(handle) {
     syncDisabledModelsWithConfig();
     renderModelConfig();
     refreshUI();
+}
+
+async function importLeaderboard(count) {
+    const btn = document.getElementById('confirmLeaderboardBtn');
+    btn.disabled = true;
+    btn.innerText = '导入中...';
+
+    try {
+        const previousCount = modelConfig.length;
+        const response = await fetch('/api/config/import-leaderboard', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ count, type: 'models' })
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.detail || '导入失败');
+        }
+
+        const importedCount = Math.max(0, result.length - previousCount);
+        sessionStorage.setItem(IMPORT_LEADERBOARD_TOAST_KEY, `已导入 ${importedCount} 个模型`);
+        window.location.reload();
+    } catch (err) {
+        showToast(err.message || '导入失败，请稍后重试', true);
+    } finally {
+        btn.disabled = false;
+        btn.innerText = '开始导入';
+    }
 }
 
 // Data Handling
@@ -219,6 +249,16 @@ function renderTable(data) {
 function setupEventListeners() {
     document.getElementById('updateBtn').addEventListener('click', updateData);
     document.getElementById('addModelBtn').addEventListener('click', addModel);
+    document.getElementById('importLeaderboardBtn').addEventListener('click', openLeaderboardDialog);
+    document.getElementById('cancelLeaderboardBtn').addEventListener('click', closeLeaderboardDialog);
+    document.getElementById('leaderboardForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const input = document.getElementById('leaderboardCountInput');
+        const count = Number.parseInt(input.value, 10);
+        const normalizedCount = Number.isFinite(count) ? Math.min(100, Math.max(1, count)) : 30;
+        input.value = String(normalizedCount);
+        await importLeaderboard(normalizedCount);
+    });
     document.getElementById('modelList').addEventListener('click', async (e) => {
         const btn = e.target.closest('button[data-action]');
         if (!btn) return;
@@ -268,6 +308,40 @@ function setupEventListeners() {
         toggleChartModelHidden(handle);
     });
     updateChartSortDirText();
+}
+
+function openLeaderboardDialog() {
+    const dialog = document.getElementById('leaderboardDialog');
+    const input = document.getElementById('leaderboardCountInput');
+    input.value = '30';
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', 'open');
+    input.focus();
+    input.select();
+}
+
+function closeLeaderboardDialog() {
+    const dialog = document.getElementById('leaderboardDialog');
+    if (dialog.open) dialog.close();
+}
+
+function showPendingToast() {
+    const message = sessionStorage.getItem(IMPORT_LEADERBOARD_TOAST_KEY);
+    if (!message) return;
+    sessionStorage.removeItem(IMPORT_LEADERBOARD_TOAST_KEY);
+    showToast(message);
+}
+
+function showToast(message, isError = false) {
+    const toast = document.getElementById('toast');
+    if (!toast) return;
+    toast.innerText = message;
+    toast.style.background = isError ? '#b91c1c' : '#14532d';
+    toast.classList.remove('hidden');
+    window.clearTimeout(showToast.timerId);
+    showToast.timerId = window.setTimeout(() => {
+        toast.classList.add('hidden');
+    }, 3200);
 }
 
 function loadDisabledModels() {

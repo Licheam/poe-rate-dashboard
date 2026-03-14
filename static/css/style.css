@@ -20,9 +20,20 @@ h1 { margin: 0; color: var(--dark); font-weight: 800; }
 .subtitle { color: #64748b; margin-top: 0.5rem; }
 
 .actions { margin-top: 1.5rem; display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
+.action-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.75rem; }
 .btn-primary { background: var(--primary); color: white; border: none; padding: 0.8rem 1.5rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
 .btn-primary:hover { background: #357abd; }
 .btn-primary:disabled { background: #94a3b8; cursor: not-allowed; }
+.action-btn { padding-inline: 1.2rem; }
+.btn-ghost {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: #475569;
+    padding: 0.75rem 1.2rem;
+    border-radius: 0.5rem;
+    cursor: pointer;
+}
+.btn-ghost:hover { background: #f8fafc; }
 .progress-wrap { width: min(420px, 90vw); }
 .progress-track { height: 10px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
 .progress-bar {
@@ -146,6 +157,70 @@ td { padding: 1rem; border-bottom: 1px solid var(--border); }
 .hidden { display: none; }
 tr:hover td { background: #f8fafc; }
 
+.toast {
+    position: sticky;
+    top: 1rem;
+    z-index: 20;
+    width: fit-content;
+    max-width: min(92vw, 420px);
+    margin: 0 auto 1rem;
+    padding: 0.85rem 1.1rem;
+    border-radius: 999px;
+    background: #14532d;
+    color: #fff;
+    box-shadow: 0 12px 30px rgba(20, 83, 45, 0.22);
+}
+
+.leaderboard-dialog {
+    border: none;
+    border-radius: 1rem;
+    padding: 0;
+    width: min(92vw, 420px);
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
+}
+
+.leaderboard-dialog::backdrop {
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(2px);
+}
+
+.leaderboard-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    padding: 1.4rem;
+}
+
+.dialog-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--dark);
+}
+
+.dialog-label {
+    font-size: 0.95rem;
+    color: #475569;
+}
+
+.dialog-input {
+    border: 1px solid var(--border);
+    border-radius: 0.7rem;
+    padding: 0.8rem 0.9rem;
+    font-size: 1rem;
+}
+
+.dialog-hint {
+    margin-top: -0.3rem;
+    font-size: 0.85rem;
+    color: #64748b;
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+}
+
 @media (max-width: 768px) {
     .chart-header-row {
         flex-direction: column;
@@ -164,5 +239,12 @@ tr:hover td { background: #f8fafc; }
     #filterInput {
         width: 100%;
         max-width: 100%;
+    }
+    .dialog-actions {
+        flex-direction: column-reverse;
+    }
+    .dialog-actions button,
+    .action-buttons button {
+        width: 100%;
     }
 }

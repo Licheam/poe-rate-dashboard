@@ -9,11 +9,15 @@
 </head>
 <body>
     <div class="container">
+        <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
         <header>
             <h1>🚀 Poe 模型费率可视化对比</h1>
             <p class="subtitle">基于 FastAPI + Chart.js 的 AI 模型价格监控面板</p>
             <div class="actions">
-                <button id="updateBtn" class="btn-primary">🔄 立即更新数据</button>
+                <div class="action-buttons">
+                    <button id="updateBtn" class="btn-primary">🔄 立即更新数据</button>
+                    <button id="importLeaderboardBtn" class="btn-secondary action-btn">导入排行榜</button>
+                </div>
                 <span id="loadingMsg" class="hidden">正在抓取最新数据，请稍候...</span>
                 <div id="progressWrap" class="progress-wrap hidden" aria-live="polite">
                     <div class="progress-track">
@@ -85,6 +89,27 @@
             </table>
         </section>
     </div>
+
+    <dialog id="leaderboardDialog" class="leaderboard-dialog">
+        <form method="dialog" id="leaderboardForm" class="leaderboard-form">
+            <div class="dialog-title">导入排行榜</div>
+            <label for="leaderboardCountInput" class="dialog-label">导入 Top N 个模型</label>
+            <input
+                id="leaderboardCountInput"
+                class="dialog-input"
+                type="number"
+                min="1"
+                max="100"
+                value="30"
+                inputmode="numeric"
+            >
+            <div class="dialog-hint">默认 30，最大 100</div>
+            <div class="dialog-actions">
+                <button type="button" id="cancelLeaderboardBtn" class="btn-ghost">取消</button>
+                <button type="submit" id="confirmLeaderboardBtn" class="btn-primary">开始导入</button>
+            </div>
+        </form>
+    </dialog>
     <script src="js/app.js"></script>
 </body>
 </html>

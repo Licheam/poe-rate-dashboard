@@ -11,15 +11,7 @@ import os
 from datetime import datetime
 from typing import List, Optional
 
-try:
-    import tomllib
-except ModuleNotFoundError:
-    tomllib = None
-
-try:
-    import toml
-except ModuleNotFoundError:
-    toml = None
+import tomllib
 
 app = FastAPI()
 
@@ -89,20 +81,13 @@ def validate_leaderboard_type(value):
     return leaderboard_type
 
 def load_config():
-    with open(CONFIG_FILE, "r") as f:
-        if tomllib is not None:
-            return tomllib.loads(f.read())
-        if toml is not None:
-            return toml.loads(f.read())
-    raise RuntimeError("No TOML reader available")
+    with open(CONFIG_FILE, "rb") as f:
+        return tomllib.load(f)
 
 def save_config(cfg):
+    handles = cfg.get("handles", [])
+    serialized_handles = ", ".join(json.dumps(handle, ensure_ascii=False) for handle in handles)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        if toml is not None:
-            toml.dump(cfg, f)
-            return
-        handles = cfg.get("handles", [])
-        serialized_handles = ", ".join(json.dumps(handle, ensure_ascii=False) for handle in handles)
         f.write(f"handles = [{serialized_handles}]\n")
 
 def add_model_handle(cfg, handle):
