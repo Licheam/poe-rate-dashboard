@@ -5,6 +5,7 @@ import httpx
 from fastapi import HTTPException
 
 import server
+from api.routes import UpdateStatusStore
 
 
 SAMPLE_GRAPHQL_RESPONSE = {
@@ -224,6 +225,49 @@ class LeaderboardEndpointTests(unittest.IsolatedAsyncioTestCase):
             ["GPT-5", "Nano-Banana-2", "Claude-sonnet-4.6"],
         )
         save_mock.assert_called_once_with(cfg)
+
+
+class UpdateStatusStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_older_task_finish_does_not_override_newer_active_task(self):
+        store = UpdateStatusStore()
+
+        first_task_id = await store.start_task(2)
+        second_task_id = await store.start_task(1)
+
+        await store.set_current(first_task_id, "GPT-5")
+        await store.mark_completed(first_task_id)
+        await store.finish_task(first_task_id)
+
+        await store.set_current(second_task_id, "Claude-sonnet-4.6")
+        status = await store.snapshot()
+
+        self.assertEqual(
+            status,
+            {
+                "running": True,
+                "total": 1,
+                "completed": 0,
+                "current": "Claude-sonnet-4.6",
+                "error": "",
+                "updated_at": status["updated_at"],
+            },
+        )
+
+    async def test_snapshot_returns_latest_finished_task_when_no_active_task(self):
+        store = UpdateStatusStore()
+
+        task_id = await store.start_task(1)
+        await store.mark_completed(task_id)
+        await store.finish_task(task_id)
+
+        status = await store.snapshot()
+
+        self.assertFalse(status["running"])
+        self.assertEqual(status["total"], 1)
+        self.assertEqual(status["completed"], 1)
+        self.assertEqual(status["current"], "")
+        self.assertEqual(status["error"], "")
+        self.assertIsNotNone(status["updated_at"])
 
 
 if __name__ == "__main__":
