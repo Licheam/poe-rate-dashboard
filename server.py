@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from bs4 import BeautifulSoup
 import httpx
 import html
 import json
@@ -24,7 +23,7 @@ app.add_middleware(
 
 CONFIG_FILE = "models_config.toml"
 DATA_FILE = "static/data.json"
-POE_LEADERBOARD_URL = "https://poe.com/leaderboard"
+POE_GRAPHQL_URL = "https://poe.com/api/gql_POST"
 CANONICAL_PREFIXES = {
     "gpt": "GPT",
     "claude": "Claude",
@@ -34,6 +33,9 @@ LEADERBOARD_TYPE_TITLES = {
     "models": "Top Models",
     "apps": "Top Apps",
 }
+POE_LEADERBOARD_QUERY_NAME = "LeaderboardPageColumn_LeaderboardStatsQuery"
+POE_LEADERBOARD_QUERY_HASH = "803d5007cefa51acd05611b9e5acec267561ec5f890e55f8e19589ccf7583511"
+POE_LEADERBOARD_INTERVAL = "week"
 
 update_status = {
     "running": False,
@@ -70,9 +72,6 @@ def normalize_handle_case(handle):
 
     parts[0] = canonical
     return "".join(parts)
-
-def normalize_whitespace(value):
-    return re.sub(r"\s+", " ", value or "").strip()
 
 def validate_leaderboard_type(value):
     leaderboard_type = (value or "models").strip().lower()
@@ -142,132 +141,67 @@ def render_cache_discount_html(value):
 
     return "".join(parts)
 
-async def fetch_poe_leaderboard_html():
+async def fetch_poe_leaderboard_via_graphql(count: int, type: str = "models"):
+    leaderboard_type = validate_leaderboard_type(type)
+    payload = {
+        "queryName": POE_LEADERBOARD_QUERY_NAME,
+        "variables": {"interval": POE_LEADERBOARD_INTERVAL},
+        "extensions": {"hash": POE_LEADERBOARD_QUERY_HASH},
+    }
+    headers = {
+        **HEADERS,
+        "poe-queryname": POE_LEADERBOARD_QUERY_NAME,
+    }
+
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(
-                POE_LEADERBOARD_URL,
-                headers={"user-agent": HEADERS["user-agent"]},
+            resp = await client.post(
+                POE_GRAPHQL_URL,
+                headers=headers,
+                json=payload,
             )
             resp.raise_for_status()
-            if not resp.text:
-                raise HTTPException(status_code=502, detail="Poe leaderboard returned empty HTML")
-            return resp.text
+            data = resp.json()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Poe leaderboard request failed with status {exc.response.status_code}",
+            detail=f"Poe leaderboard GraphQL request failed with status {exc.response.status_code}",
         ) from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="Failed to fetch Poe leaderboard") from exc
+        raise HTTPException(status_code=502, detail="Failed to fetch Poe leaderboard via GraphQL") from exc
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail="Poe leaderboard GraphQL returned invalid JSON") from exc
 
-def _find_leaderboard_heading(soup, title):
-    title_text = normalize_whitespace(title).lower()
-    for tag in soup.find_all(["h1", "h2", "h3", "h4", "div", "span", "p", "button"]):
-        tag_text = normalize_whitespace(tag.get_text(" ", strip=True)).lower()
-        if tag_text == title_text or title_text in tag_text:
-            return tag
-    return None
+    if data.get("errors"):
+        raise HTTPException(status_code=502, detail="Poe leaderboard GraphQL returned errors")
 
-def _looks_like_leaderboard_container(tag):
-    if not getattr(tag, "find_all", None):
-        return False
+    ranking_key = "topModelLatest" if leaderboard_type == "models" else "topAppLatest"
+    rankings = data.get("data", {}).get(ranking_key, {}).get("topRankings")
+    if not isinstance(rankings, list):
+        raise HTTPException(status_code=502, detail=f"Poe leaderboard GraphQL response missing {ranking_key}.topRankings")
 
-    text = normalize_whitespace(tag.get_text(" ", strip=True))
-    if not re.search(r"\b\d+\b", text):
-        return False
-    if not re.search(r"\d+(?:\.\d+)?%", text):
-        return False
-
-    link_count = 0
-    for link in tag.find_all("a", href=True):
-        if extract_redirect_handle(link["href"]):
-            link_count += 1
-            if link_count >= 3:
-                return True
-    return False
-
-def extract_leaderboard_section(html_text, leaderboard_type):
-    soup = BeautifulSoup(html_text, "html.parser")
-    title = LEADERBOARD_TYPE_TITLES[leaderboard_type]
-    heading = _find_leaderboard_heading(soup, title)
-    if heading is None:
-        raise HTTPException(status_code=502, detail=f'Could not find "{title}" section in Poe leaderboard HTML')
-
-    for parent in heading.parents:
-        if _looks_like_leaderboard_container(parent):
-            return parent
-
-    sibling_container = heading.parent
-    if sibling_container and _looks_like_leaderboard_container(sibling_container):
-        return sibling_container
-
-    raise HTTPException(status_code=502, detail=f'Could not isolate "{title}" section in Poe leaderboard HTML')
-
-def _extract_rank(text):
-    patterns = [
-        r"^\s*#?(\d{1,3})(?:[.)\s]|$)",
-        r"\brank\s*#?\s*(\d{1,3})\b",
-        r"\b排名\s*#?\s*(\d{1,3})\b",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-    return None
-
-def _extract_market_share(text):
-    match = re.search(r"(\d+(?:\.\d+)?)%", text)
-    return f"{match.group(1)}%" if match else None
-
-def _extract_handle_from_link(link):
-    text_handle = normalize_whitespace(link.get_text(" ", strip=True))
-    if text_handle:
-        return normalize_handle_case(text_handle)
-
-    href_handle = extract_redirect_handle(link.get("href"))
-    if href_handle:
-        return normalize_handle_case(href_handle)
-
-    return None
-
-def parse_leaderboard_items(section, count):
     items = []
     seen_handles = set()
+    for ranking in rankings:
+        if not isinstance(ranking, dict):
+            continue
 
-    for link in section.find_all("a", href=True):
-        handle = _extract_handle_from_link(link)
+        rank = ranking.get("rank")
+        display_name = ranking.get("ranked", {}).get("displayName")
+        if not isinstance(rank, int) or not display_name:
+            continue
+
+        handle = normalize_handle_case(str(display_name).strip())
         if not handle:
             continue
 
         lowered_handle = handle.lower()
-        if lowered_handle in {"leaderboard", "download", "login", "settings"}:
-            continue
         if lowered_handle in seen_handles:
             continue
 
-        row = None
-        for parent in link.parents:
-            if parent == section:
-                break
-            parent_text = normalize_whitespace(parent.get_text(" ", strip=True))
-            if _extract_rank(parent_text) and _extract_market_share(parent_text):
-                row = parent
-                break
-
-        if row is None:
-            continue
-
-        row_text = normalize_whitespace(row.get_text(" ", strip=True))
-        rank = _extract_rank(row_text)
-        market_share = _extract_market_share(row_text)
-        if rank is None or market_share is None:
-            continue
-
         items.append({
-            "rank": rank,
             "handle": handle,
-            "market_share": market_share,
+            "rank": rank,
         })
         seen_handles.add(lowered_handle)
 
@@ -428,10 +362,7 @@ async def get_poe_leaderboard(
     count: int = Query(default=30, ge=1, le=100),
     type: str = Query(default="models"),
 ):
-    leaderboard_type = validate_leaderboard_type(type)
-    html_text = await fetch_poe_leaderboard_html()
-    section = extract_leaderboard_section(html_text, leaderboard_type)
-    items = parse_leaderboard_items(section, count)
+    items = await fetch_poe_leaderboard_via_graphql(count, type)
     if not items:
         raise HTTPException(status_code=502, detail="Could not parse Poe leaderboard items")
     return items
@@ -441,10 +372,7 @@ async def import_leaderboard_models(item: LeaderboardImportRequest):
     if item.count < 1 or item.count > 100:
         raise HTTPException(status_code=422, detail="count must be between 1 and 100")
 
-    leaderboard_type = validate_leaderboard_type(item.type)
-    html_text = await fetch_poe_leaderboard_html()
-    section = extract_leaderboard_section(html_text, leaderboard_type)
-    leaderboard_items = parse_leaderboard_items(section, item.count)
+    leaderboard_items = await fetch_poe_leaderboard_via_graphql(item.count, item.type)
     if not leaderboard_items:
         raise HTTPException(status_code=502, detail="Could not parse Poe leaderboard items")
 
