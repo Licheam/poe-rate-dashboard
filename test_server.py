@@ -1,11 +1,18 @@
+import asyncio
+import json
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import httpx
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 import server
+from api import routes as api_routes
 from api.routes import UpdateStatusStore
+from services import poe_client
 
 
 SAMPLE_GRAPHQL_RESPONSE = {
@@ -84,15 +91,19 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def post(self, url, headers=None, json=None):
+    async def post(self, url, headers=None, json=None, timeout=None):
         self.calls.append(
             {
                 "url": url,
                 "headers": headers,
                 "json": json,
+                "timeout": timeout,
             }
         )
         return self.response
+
+    async def aclose(self):
+        return None
 
 
 class FetchPoeLeaderboardGraphQLTests(unittest.IsolatedAsyncioTestCase):
@@ -268,6 +279,106 @@ class UpdateStatusStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["current"], "")
         self.assertEqual(status["error"], "")
         self.assertIsNotNone(status["updated_at"])
+
+
+class SharedAsyncClientLifecycleTests(unittest.TestCase):
+    def test_lifespan_registers_and_closes_shared_async_client(self):
+        class DummyAsyncClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.closed = False
+
+            async def aclose(self):
+                self.closed = True
+
+        created_clients = []
+
+        def build_client(**kwargs):
+            client = DummyAsyncClient(**kwargs)
+            created_clients.append(client)
+            return client
+
+        self.assertIsNone(poe_client.get_async_client())
+
+        with patch("server.httpx.AsyncClient", side_effect=build_client):
+            with TestClient(server.app):
+                self.assertEqual(len(created_clients), 1)
+                self.assertIs(poe_client.get_async_client(), created_clients[0])
+                self.assertTrue(created_clients[0].kwargs["follow_redirects"])
+
+        self.assertIsNone(poe_client.get_async_client())
+        self.assertTrue(created_clients[0].closed)
+
+
+class UpdateAllConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_update_all_limits_concurrency_and_isolates_failures(self):
+        status_store = UpdateStatusStore()
+        active = 0
+        peak_active = 0
+
+        async def fake_fetch_single_rate(handle):
+            nonlocal active, peak_active
+            active += 1
+            peak_active = max(peak_active, active)
+            try:
+                await asyncio.sleep(0.01)
+                if handle == "Broken":
+                    raise RuntimeError("upstream failure")
+                return {
+                    "handle": handle,
+                    "input": 1.0,
+                    "output": 2.0,
+                    "cache_discount": None,
+                }
+            finally:
+                active -= 1
+
+        with tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8", delete=False) as tmp_file:
+            data_file = tmp_file.name
+
+        try:
+            with patch.object(api_routes, "update_status_store", status_store), patch(
+                "server.load_config",
+                return_value={"handles": ["Alpha", "Broken", "Gamma"]},
+            ), patch(
+                "server.fetch_single_rate",
+                side_effect=fake_fetch_single_rate,
+            ), patch.object(
+                server,
+                "DATA_FILE",
+                data_file,
+            ), patch.object(
+                server,
+                "UPDATE_MAX_CONCURRENCY",
+                2,
+            ):
+                results = await server.update_all()
+
+            self.assertEqual(
+                results,
+                [
+                    {"handle": "Alpha", "input": 1.0, "output": 2.0, "cache_discount": None},
+                    {"handle": "Gamma", "input": 1.0, "output": 2.0, "cache_discount": None},
+                ],
+            )
+            self.assertEqual(peak_active, 2)
+
+            with open(data_file, "r", encoding="utf-8") as f:
+                persisted = json.load(f)
+
+            self.assertEqual(persisted, results)
+
+            status = await status_store.snapshot()
+            self.assertFalse(status["running"])
+            self.assertEqual(status["total"], 3)
+            self.assertEqual(status["completed"], 3)
+            self.assertEqual(status["current"], "")
+            self.assertIn("Broken: upstream failure", status["error"])
+        finally:
+            try:
+                os.unlink(data_file)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":

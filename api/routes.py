@@ -31,6 +31,8 @@ class UpdateStatusStore:
         self._tasks = {}
         self._active_task_id = None
         self._latest_task_id = None
+        self._task_active_handles = {}
+        self._task_failures = {}
 
     @staticmethod
     def _timestamp():
@@ -51,22 +53,57 @@ class UpdateStatusStore:
             self._tasks[task_id] = task
             self._active_task_id = task_id
             self._latest_task_id = task_id
+            self._task_active_handles[task_id] = set()
+            self._task_failures[task_id] = {}
         return task_id
+
+    @staticmethod
+    def _format_active_handles(active_handles):
+        if not active_handles:
+            return ""
+
+        handles = sorted(active_handles)
+        preview = ", ".join(handles[:3])
+        if len(handles) > 3:
+            preview = f"{preview} (+{len(handles) - 3} running)"
+        return preview
+
+    @staticmethod
+    def _format_failures(failures):
+        if not failures:
+            return ""
+        return "; ".join(f"{handle}: {reason}" for handle, reason in sorted(failures.items()))
 
     async def set_current(self, task_id, current):
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 return
-            task.current = current
+            self._task_active_handles.setdefault(task_id, set()).add(current)
+            task.current = self._format_active_handles(self._task_active_handles[task_id])
             task.updated_at = self._timestamp()
 
-    async def mark_completed(self, task_id):
+    async def mark_completed(self, task_id, current=None):
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 return
+            if current:
+                self._task_active_handles.setdefault(task_id, set()).discard(current)
             task.completed += 1
+            task.current = self._format_active_handles(self._task_active_handles.get(task_id, set()))
+            task.updated_at = self._timestamp()
+
+    async def mark_failed(self, task_id, current, error):
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+            self._task_active_handles.setdefault(task_id, set()).discard(current)
+            self._task_failures.setdefault(task_id, {})[current] = error
+            task.completed += 1
+            task.current = self._format_active_handles(self._task_active_handles.get(task_id, set()))
+            task.error = self._format_failures(self._task_failures.get(task_id, {}))
             task.updated_at = self._timestamp()
 
     async def fail_task(self, task_id, error):
@@ -74,7 +111,8 @@ class UpdateStatusStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return
-            task.error = error
+            failures = self._task_failures.get(task_id, {})
+            task.error = self._format_failures(failures) or error
             task.updated_at = self._timestamp()
 
     async def finish_task(self, task_id):
@@ -88,6 +126,7 @@ class UpdateStatusStore:
             if self._active_task_id == task_id:
                 self._active_task_id = None
             self._latest_task_id = task_id
+            self._task_active_handles.pop(task_id, None)
 
     async def is_active_task(self, task_id):
         async with self._lock:
@@ -182,14 +221,29 @@ def build_router(deps):
 
         task_id = await update_status_store.start_task(len(targets))
 
-        results = []
-        try:
-            for target in targets:
+        max_concurrency = max(1, int(getattr(deps, "UPDATE_MAX_CONCURRENCY", 5)))
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def fetch_target(target):
+            async with semaphore:
                 await update_status_store.set_current(task_id, target)
-                res = await deps.fetch_single_rate(target)
-                if res:
-                    results.append(res)
-                await update_status_store.mark_completed(task_id)
+                try:
+                    result = await deps.fetch_single_rate(target)
+                except Exception as exc:
+                    await update_status_store.mark_failed(task_id, target, str(exc))
+                    return {"ok": False, "handle": target, "error": str(exc)}
+
+                if result:
+                    await update_status_store.mark_completed(task_id, target)
+                    return {"ok": True, "handle": target, "result": result}
+
+                error = "no rate data returned"
+                await update_status_store.mark_failed(task_id, target, error)
+                return {"ok": False, "handle": target, "error": error}
+
+        try:
+            outcomes = await asyncio.gather(*(fetch_target(target) for target in targets))
+            results = [item["result"] for item in outcomes if item["ok"]]
 
             if await update_status_store.is_active_task(task_id):
                 with open(deps.DATA_FILE, "w", encoding="utf-8") as f:

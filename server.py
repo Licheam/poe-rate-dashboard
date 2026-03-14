@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
@@ -37,7 +38,22 @@ if not logging.getLogger().handlers:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-app = FastAPI()
+UPDATE_MAX_CONCURRENCY = max(1, int(os.getenv("UPDATE_MAX_CONCURRENCY", "5")))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    client = httpx.AsyncClient(follow_redirects=True)
+    app.state.http_client = client
+    poe_client.set_async_client(client)
+    try:
+        yield
+    finally:
+        poe_client.set_async_client(None)
+        await client.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,21 +65,11 @@ app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 
 async def fetch_poe_leaderboard_via_graphql(count: int, type: str = "models"):
-    original_httpx = poe_client.httpx
-    poe_client.httpx = httpx
-    try:
-        return await poe_client.fetch_poe_leaderboard_via_graphql(count, type)
-    finally:
-        poe_client.httpx = original_httpx
+    return await poe_client.fetch_poe_leaderboard_via_graphql(count, type)
 
 
 async def fetch_single_rate(handle):
-    original_httpx = poe_client.httpx
-    poe_client.httpx = httpx
-    try:
-        return await poe_client.fetch_single_rate(handle)
-    finally:
-        poe_client.httpx = original_httpx
+    return await poe_client.fetch_single_rate(handle)
 
 
 async def get_update_status():

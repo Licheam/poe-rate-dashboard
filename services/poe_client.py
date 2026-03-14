@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import HTTPException
@@ -13,6 +14,7 @@ from services.rate_parser import (
 
 
 logger = logging.getLogger("poe_rate_dashboard")
+_shared_async_client = None
 
 POE_GRAPHQL_URL = "https://poe.com/api/gql_POST"
 LEADERBOARD_TYPE_TITLES = {
@@ -75,6 +77,25 @@ def validate_leaderboard_type(value):
     return leaderboard_type
 
 
+def set_async_client(client):
+    global _shared_async_client
+    _shared_async_client = client
+
+
+def get_async_client():
+    return _shared_async_client
+
+
+@asynccontextmanager
+async def get_managed_async_client():
+    if _shared_async_client is not None:
+        yield _shared_async_client
+        return
+
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        yield client
+
+
 async def fetch_poe_leaderboard_via_graphql(count: int, type: str = "models"):
     leaderboard_type = validate_leaderboard_type(type)
     payload = {
@@ -97,11 +118,12 @@ async def fetch_poe_leaderboard_via_graphql(count: int, type: str = "models"):
     )
 
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with get_managed_async_client() as client:
             resp = await client.post(
                 POE_GRAPHQL_URL,
                 headers=headers,
                 json=payload,
+                timeout=15.0,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -247,6 +269,7 @@ async def fetch_single_rate(handle):
             url,
             headers={"user-agent": HEADERS["user-agent"]},
             follow_redirects=False,
+            timeout=10.0,
         )
 
         redirect_handle = extract_redirect_handle(resp.headers.get("location"))
@@ -277,7 +300,7 @@ async def fetch_single_rate(handle):
             "variables": {"botId": bot_id},
             "extensions": {"hash": "63afb70b30540bafd08f593b26c61f8bdd5b6818590742e5170f417709792788"},
         }
-        resp = await client.post(POE_GRAPHQL_URL, headers=HEADERS, json=payload)
+        resp = await client.post(POE_GRAPHQL_URL, headers=HEADERS, json=payload, timeout=15.0)
         data = resp.json()
 
         if data.get("errors"):
@@ -299,14 +322,14 @@ async def fetch_single_rate(handle):
     if normalized_handle not in pending:
         pending.append(normalized_handle)
 
-    async with httpx.AsyncClient(timeout=10.0) as page_client, httpx.AsyncClient(timeout=15.0) as gql_client:
+    async with get_managed_async_client() as client:
         while pending:
             current_handle = pending.pop(0)
             if current_handle in attempted:
                 continue
             attempted.append(current_handle)
 
-            page_result = await fetch_page(page_client, current_handle)
+            page_result = await fetch_page(client, current_handle)
             resolved_handle = page_result["handle"]
 
             if page_result["status"] in {"redirect", "not_found", "missing_bot_id"}:
@@ -318,7 +341,7 @@ async def fetch_single_rate(handle):
                     pending.insert(0, resolved_handle)
                 continue
 
-            result = await fetch_rates(gql_client, resolved_handle, page_result["bot_id"])
+            result = await fetch_rates(client, resolved_handle, page_result["bot_id"])
             if result:
                 return result
 
