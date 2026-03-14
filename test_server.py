@@ -66,6 +66,7 @@ class FakeResponse:
         self._payload = payload
         self.status_code = status_code
         self.request = httpx.Request("POST", server.POE_GRAPHQL_URL)
+        self.headers = {"content-type": "application/json"}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -134,6 +135,32 @@ class FetchPoeLeaderboardGraphQLTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(items, [{"handle": "App-One", "rank": 1}])
 
+    async def test_fetch_models_falls_back_to_handle_field(self):
+        fake_client = FakeAsyncClient(
+            FakeResponse(
+                {
+                    "data": {
+                        "topModelLatest": {
+                            "topRankings": [
+                                {
+                                    "rank": 1,
+                                    "ranked": {
+                                        "handle": "gpt-oss-120b",
+                                        "__typename": "Bot",
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                }
+            )
+        )
+
+        with patch("server.httpx.AsyncClient", return_value=fake_client):
+            items = await server.fetch_poe_leaderboard_via_graphql(5, "models")
+
+        self.assertEqual(items, [{"handle": "GPT-oss-120b", "rank": 1}])
+
     async def test_fetch_raises_on_missing_rankings(self):
         fake_client = FakeAsyncClient(FakeResponse({"data": {"topModelLatest": {}}}))
 
@@ -143,6 +170,33 @@ class FetchPoeLeaderboardGraphQLTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(exc_info.exception.status_code, 502)
         self.assertIn("topModelLatest.topRankings", exc_info.exception.detail)
+
+    async def test_fetch_raises_when_rankings_exist_but_no_items_are_parseable(self):
+        fake_client = FakeAsyncClient(
+            FakeResponse(
+                {
+                    "data": {
+                        "topModelLatest": {
+                            "topRankings": [
+                                {
+                                    "rank": 1,
+                                    "ranked": {
+                                        "__typename": "Bot",
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                }
+            )
+        )
+
+        with patch("server.httpx.AsyncClient", return_value=fake_client):
+            with self.assertRaises(HTTPException) as exc_info:
+                await server.fetch_poe_leaderboard_via_graphql(5, "models")
+
+        self.assertEqual(exc_info.exception.status_code, 502)
+        self.assertIn("Could not parse Poe leaderboard items", exc_info.exception.detail)
 
 
 class LeaderboardEndpointTests(unittest.IsolatedAsyncioTestCase):

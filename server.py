@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import html
 import json
+import logging
 import re
 import os
 from datetime import datetime
@@ -13,6 +14,12 @@ from typing import List, Optional
 import tomllib
 
 app = FastAPI()
+logger = logging.getLogger("poe_rate_dashboard")
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,6 +63,37 @@ HEADERS = {
     'poegraphql': '1',
     'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36'
 }
+
+def _truncate_for_log(value, limit=2000):
+    if value is None:
+        return None
+
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
+
+def _extract_leaderboard_handle(ranked):
+    if not isinstance(ranked, dict):
+        return None, "ranked is not a dict"
+
+    candidates = [
+        ("displayName", ranked.get("displayName")),
+        ("handle", ranked.get("handle")),
+        ("username", ranked.get("username")),
+        ("slug", ranked.get("slug")),
+        ("name", ranked.get("name")),
+        ("bot.displayName", ranked.get("bot", {}).get("displayName") if isinstance(ranked.get("bot"), dict) else None),
+        ("bot.handle", ranked.get("bot", {}).get("handle") if isinstance(ranked.get("bot"), dict) else None),
+    ]
+    for source, raw in candidates:
+        if raw is None:
+            continue
+        handle = normalize_handle_case(str(raw).strip())
+        if handle:
+            return handle, source
+
+    return None, f"no supported handle field in ranked keys={sorted(ranked.keys())}"
 
 def normalize_handle_case(handle):
     if not handle:
@@ -153,6 +191,15 @@ async def fetch_poe_leaderboard_via_graphql(count: int, type: str = "models"):
         "poe-queryname": POE_LEADERBOARD_QUERY_NAME,
     }
 
+    logger.info(
+        "Fetching Poe leaderboard via GraphQL: type=%s count=%s url=%s headers=%s payload=%s",
+        leaderboard_type,
+        count,
+        POE_GRAPHQL_URL,
+        _truncate_for_log({k: v for k, v in headers.items() if k.lower() != "cookie"}),
+        _truncate_for_log(payload),
+    )
+
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.post(
@@ -162,53 +209,130 @@ async def fetch_poe_leaderboard_via_graphql(count: int, type: str = "models"):
             )
             resp.raise_for_status()
             data = resp.json()
+            logger.info(
+                "Poe leaderboard GraphQL response received: status=%s headers=%s body=%s",
+                resp.status_code,
+                _truncate_for_log(dict(resp.headers)),
+                _truncate_for_log(data),
+            )
     except httpx.HTTPStatusError as exc:
+        response_text = None
+        try:
+            response_text = exc.response.text
+        except Exception:
+            response_text = "<<unable to read response body>>"
+        logger.exception(
+            "Poe leaderboard GraphQL HTTP status error: status=%s body=%s",
+            exc.response.status_code,
+            _truncate_for_log(response_text),
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Poe leaderboard GraphQL request failed with status {exc.response.status_code}",
         ) from exc
     except httpx.HTTPError as exc:
+        logger.exception("Poe leaderboard GraphQL network error")
         raise HTTPException(status_code=502, detail="Failed to fetch Poe leaderboard via GraphQL") from exc
     except json.JSONDecodeError as exc:
+        logger.exception("Poe leaderboard GraphQL returned invalid JSON")
         raise HTTPException(status_code=502, detail="Poe leaderboard GraphQL returned invalid JSON") from exc
 
     if data.get("errors"):
+        logger.error("Poe leaderboard GraphQL returned errors: %s", _truncate_for_log(data.get("errors")))
         raise HTTPException(status_code=502, detail="Poe leaderboard GraphQL returned errors")
 
     ranking_key = "topModelLatest" if leaderboard_type == "models" else "topAppLatest"
-    rankings = data.get("data", {}).get(ranking_key, {}).get("topRankings")
+    data_root = data.get("data", {})
+    rankings_parent = data_root.get(ranking_key, {})
+    rankings = rankings_parent.get("topRankings")
+    logger.info(
+        "Parsing leaderboard response: ranking_key=%s data_keys=%s parent_keys=%s rankings_type=%s rankings_len=%s",
+        ranking_key,
+        sorted(data_root.keys()) if isinstance(data_root, dict) else data_root.__class__.__name__,
+        sorted(rankings_parent.keys()) if isinstance(rankings_parent, dict) else rankings_parent.__class__.__name__,
+        rankings.__class__.__name__,
+        len(rankings) if isinstance(rankings, list) else None,
+    )
     if not isinstance(rankings, list):
+        logger.error(
+            "Leaderboard rankings missing or invalid: ranking_key=%s parent=%s",
+            ranking_key,
+            _truncate_for_log(rankings_parent),
+        )
         raise HTTPException(status_code=502, detail=f"Poe leaderboard GraphQL response missing {ranking_key}.topRankings")
 
     items = []
     seen_handles = set()
-    for ranking in rankings:
+    skipped_rankings = []
+    for index, ranking in enumerate(rankings):
         if not isinstance(ranking, dict):
+            skipped_rankings.append({"index": index, "reason": "ranking is not a dict", "value": ranking})
             continue
 
         rank = ranking.get("rank")
-        display_name = ranking.get("ranked", {}).get("displayName")
-        if not isinstance(rank, int) or not display_name:
-            continue
-
-        handle = normalize_handle_case(str(display_name).strip())
-        if not handle:
+        ranked = ranking.get("ranked")
+        handle, handle_source = _extract_leaderboard_handle(ranked)
+        if not isinstance(rank, int) or not handle:
+            skipped_rankings.append(
+                {
+                    "index": index,
+                    "reason": "missing required rank/handle",
+                    "rank": rank,
+                    "handle_source": handle_source,
+                    "ranking_keys": sorted(ranking.keys()),
+                    "ranked_keys": sorted(ranked.keys()) if isinstance(ranked, dict) else None,
+                    "ranking_preview": ranking,
+                }
+            )
             continue
 
         lowered_handle = handle.lower()
         if lowered_handle in seen_handles:
+            logger.info(
+                "Skipping duplicate leaderboard item: index=%s handle=%s rank=%s source=%s",
+                index,
+                handle,
+                rank,
+                handle_source,
+            )
             continue
 
         items.append({
             "handle": handle,
             "rank": rank,
         })
+        logger.info(
+            "Parsed leaderboard item: index=%s handle=%s rank=%s source=%s",
+            index,
+            handle,
+            rank,
+            handle_source,
+        )
         seen_handles.add(lowered_handle)
 
         if len(items) >= count:
             break
 
     items.sort(key=lambda item: item["rank"])
+    logger.info(
+        "Leaderboard parsing completed: requested=%s parsed=%s skipped=%s items=%s",
+        count,
+        len(items),
+        len(skipped_rankings),
+        _truncate_for_log(items),
+    )
+    if skipped_rankings:
+        logger.warning("Skipped leaderboard rankings: %s", _truncate_for_log(skipped_rankings))
+    if not items:
+        logger.error(
+            "Could not parse any leaderboard items from GraphQL response: ranking_key=%s response=%s",
+            ranking_key,
+            _truncate_for_log(data),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not parse Poe leaderboard items from {ranking_key}.topRankings",
+        )
     return items[:count]
 
 async def fetch_single_rate(handle):
